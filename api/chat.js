@@ -1,12 +1,13 @@
 import OpenAI from "openai";
 
-export const runtime = "edge"; // ✔️ Новый корректный синтаксис
+export const runtime = "edge";
 
 export default async function handler(req) {
   try {
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    const { message } = await req.json();
+    const body = await req.json();
+    const message = body.message || body.q;
 
     if (!message) {
       return new Response(JSON.stringify({ error: "No message provided" }), {
@@ -15,16 +16,14 @@ export default async function handler(req) {
       });
     }
 
-    // Создаем потоковый ответ
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",     // ✔️ быстрый и дешёвый
+      model: "gpt-4o-mini",
       stream: true,
       messages: [{ role: "user", content: message }]
     });
 
     const encoder = new TextEncoder();
 
-    // Формируем поток SSE
     const stream = new ReadableStream({
       async start(controller) {
         try {
@@ -48,12 +47,9 @@ export default async function handler(req) {
     });
 
   } catch (error) {
-    return new Response(
-      JSON.stringify({ error: error.message }),
-      {
-        status: 500,
-        headers: { "Content-Type": "application/json" }
-      }
-    );
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
   }
 }
