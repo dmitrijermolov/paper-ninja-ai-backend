@@ -1,0 +1,10 @@
+{
+  "name": "paper-ninja-ai-backend",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "openai": "4.26.0"
+  }
+}
