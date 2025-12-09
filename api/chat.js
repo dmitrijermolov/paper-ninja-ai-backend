@@ -1,4 +1,4 @@
-/*
+
 export const runtime = "nodejs";
 
 export default async function handler(req) {
@@ -45,9 +45,9 @@ export default async function handler(req) {
   }
 }
 
-*/
 
 
+/*
 // Простейший тестовый backend без OpenAI (работает)
 
 export default async function handler(req, res) {
@@ -57,7 +57,7 @@ export default async function handler(req, res) {
 
   res.status(200).send("Backend OK (Node function)");
 }
-
+*/
 
 
 /*
