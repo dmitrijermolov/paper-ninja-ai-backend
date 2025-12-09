@@ -1,48 +1,59 @@
+// api/chat.js  — Vercel Node Serverless (Form "Other" / Node.js function)
 
-export const runtime = "nodejs";
+// Можешь эту строку вообще убрать — по умолчанию и так Node
+// export const config = { runtime: "nodejs" };
 
-export default async function handler(req) {
-
+export default async function handler(req, res) {
   // ---- CORS ----
-  const corsHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type"
-  };
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  // ---- Shopify делает OPTIONS перед POST ----
+  // Preflight от браузера / Shopify
   if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders });
+    res.status(204).end();
+    return;
   }
 
-  try {
-    const { message } = await req.json();
+  if (req.method !== "POST") {
+    res.status(405).send("Method Not Allowed");
+    return;
+  }
 
-    const encoder = new TextEncoder();
+  // ---- Читаем body ----
+  let body = req.body;
 
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(encoder.encode("Backend streaming OK\n"));
-        controller.enqueue(encoder.encode("You said: " + message));
-        controller.close();
-      }
-    });
-
-    return new Response(stream, {
-      status: 200,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-cache"
-      }
-    });
-
-  } catch (err) {
-    return new Response("Error: " + err.message, {
-      status: 500,
-      headers: corsHeaders
+  // Если body ещё не распарсен Vercel'ом — читаем вручную
+  if (!body || typeof body === "string") {
+    body = await new Promise((resolve, reject) => {
+      let data = typeof body === "string" ? body : "";
+      req.on("data", chunk => (data += chunk));
+      req.on("end", () => {
+        try {
+          resolve(data ? JSON.parse(data) : {});
+        } catch (e) {
+          reject(e);
+        }
+      });
+      req.on("error", reject);
     });
   }
+
+  const message = body?.message || "";
+
+  // ---- Отдаём "стримом" по-Node'овски ----
+  res.writeHead(200, {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Cache-Control": "no-cache",
+    // даём понять, что будет несколько кусков
+    "Transfer-Encoding": "chunked",
+  });
+
+  res.write("Backend streaming OK\n");
+  res.write("You said: " + message);
+
+  // Обязательно закрываем соединение
+  res.end();
 }
 
 
