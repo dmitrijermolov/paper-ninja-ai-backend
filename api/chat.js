@@ -4,51 +4,57 @@ export const runtime = "edge";
 
 export default async function handler(req) {
   try {
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
     const body = await req.json();
     const message = body.message || body.q;
 
     if (!message) {
-      return new Response(JSON.stringify({ error: "No message" }), {
+      return new Response(JSON.stringify({ error: "No message provided" }), {
         status: 400,
         headers: { "Content-Type": "application/json" }
       });
     }
 
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-    // Новый рабочий стрим!
-    const stream = await openai.chat.completions.stream({
+    // ⚡ Новый Streaming API
+    const response = await openai.responses.create({
       model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "You are a laptop size assistant." },
-        { role: "user", content: message }
-      ]
+      input: message,
+      stream: true
     });
 
-    // Преобразуем поток OpenAI в поток ответа Edge
     const encoder = new TextEncoder();
 
-    const readable = new ReadableStream({
+    const stream = new ReadableStream({
       async start(controller) {
-        for await (const chunk of stream) {
-          const delta = chunk.choices?.[0]?.delta?.content;
-          if (delta) controller.enqueue(encoder.encode(delta));
+        try {
+          for await (const event of response) {
+            if (event.output_text) {
+              controller.enqueue(encoder.encode(event.output_text));
+            }
+          }
+        } catch (err) {
+          controller.error(err);
+        } finally {
+          controller.close();
         }
-        controller.close();
       }
     });
 
-    return new Response(readable, {
+    return new Response(stream, {
       headers: {
         "Content-Type": "text/plain; charset=utf-8",
         "Cache-Control": "no-cache"
       }
     });
 
-  } catch (err) {
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" }
-    });
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ error: error.message }),
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      }
+    );
   }
 }
