@@ -1,117 +1,114 @@
-export const runtime = "nodejs";
+// Старый рабочий
+
+// api/chat.js — Node serverless функция на Vercel
 
 import OpenAI from "openai";
 
-const MODEL = "gpt-4o-mini";
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
-const SYSTEM_PROMPT = `
-Ты — эксперт по поиску размеров ноутбуков и специалист по подбору чехлов.
+// Вспомогательная функция чтения JSON-тела в Node-формате
+async function readJsonBody(req) {
+  if (req.body && typeof req.body === "object") {
+    return req.body;
+  }
 
-Твои строгие правила:
-1) Используй только точные и подтверждённые моделью факты.
-2) Если модель ноутбука есть в твоих данных — дай реальные габариты.
-3) Если модель имеет разные ревизии / поколения — попроси уточнить, но НЕ придумывай размеры.
-4) Если точных данных нет — отвечай: «Нет точных данных по этой модели».
-5) Никогда не подставляй приблизительные или выдуманные числа.
-6) Всегда проверяй свои ответы самостоятельно (self-check):
-    - Сначала сформируй ответ.
-    - Затем оцени, корректен ли он.
-    - Если ответ неточный или основан на догадке — замени на «Нет точных данных».
-7) Формат ответа: кратко, технично, только факты.
-8) Общайся на ты и на языке пользователя.
-`;
+  let data = typeof req.body === "string" ? req.body : "";
 
-function isSuspiciousDimensions(text) {
-  const mmNumbers = text.match(/\d{2,3}/g);
-  if (!mmNumbers) return false;
-
-  if (/нет точных данных|уточни|уточните/i.test(text)) return false;
-
-  if (!/мм|mm/.test(text.toLowerCase())) return true;
-
-  if (!/ширин|глубин|толщин/.test(text.toLowerCase())) return true;
-
-  if (mmNumbers.some(n => Number(n) > 600)) return true;
-
-  return false;
+  return await new Promise((resolve, reject) => {
+    req.on("data", (chunk) => {
+      data += chunk;
+    });
+    req.on("end", () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on("error", reject);
+  });
 }
 
-export default async function handler(req) {
-  const CORS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type"
-  };
+export default async function handler(req, res) {
+  // ---- CORS ----
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
+  // Preflight
   if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: CORS });
+    res.statusCode = 204;
+    res.end();
+    return;
+  }
+
+  if (req.method !== "POST") {
+    res.statusCode = 405;
+    res.end("Method Not Allowed");
+    return;
   }
 
   try {
-    const { message, history = [] } = await req.json();
+    const body = await readJsonBody(req);
+    const userMessage = body?.message || "";
 
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-    // 1) Генерируем черновой ответ через НОВЫЙ API
-    const draftResponse = await openai.responses.create({
-      model: MODEL,
-      input: [
-        { role: "system", content: SYSTEM_PROMPT },
-        ...history,
-        { role: "user", content: message }
-      ]
-    });
-
-    const draftText =
-      draftResponse.output_text || "Ошибка генерации";
-
-    // 2) Self-check
-    const checkResponse = await openai.responses.create({
-      model: MODEL,
-      input: [
-        { role: "system", content: "Проверь корректность размеров." },
-        {
-          role: "user",
-          content: `Ответ:\n${draftText}\n\nЕсли есть риск ошибки → NET. Если корректно → OK.`
-        }
-      ]
-    });
-
-    const checkResult = checkResponse.output_text.trim();
-
-    let finalText = draftText;
-
-    if (checkResult.includes("NET") || isSuspiciousDimensions(draftText)) {
-      finalText =
-        "Нет точных данных по этой модели. Уточни модификацию или поколение.";
+    if (!userMessage) {
+      res.statusCode = 400;
+      res.end("No message provided");
+      return;
     }
 
-    // 3) STREAM
-    const encoder = new TextEncoder();
-
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(encoder.encode(finalText));
-        controller.close();
-      }
+    // Заголовки стриминга
+    res.writeHead(200, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-cache",
+      "Transfer-Encoding": "chunked",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
     });
 
-    return new Response(stream, {
-      status: 200,
-      headers: {
-        ...CORS,
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-cache"
-      }
+    // Можно отправить небольшой префикс (по желанию)
+    // res.write("AI помощник по размерам ноутбуков\n\n");
+
+    // Запускаем стрим из OpenAI
+    const stream = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      stream: true,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "Ты — ассистент по размерам ноутбуков для магазина чехлов.",
+            "Твоя задача: за 1–2 шага уточнить модель (если нужно) и выдать габариты:",
+            "ширина, глубина, толщина (в мм).",
+            "Если точных данных нет — честно напиши, что не нашёл, и предложи измерить ноутбук линейкой.",
+            "Отвечай коротко, по-деловому, на языке пользователя.",
+          ].join(" "),
+        },
+        { role: "user", content: userMessage },
+      ],
     });
 
+    // Стримим куски в браузер / Shopify
+    for await (const part of stream) {
+      const delta = part.choices?.[0]?.delta?.content || "";
+      if (delta) {
+        res.write(delta);
+      }
+    }
+
+    res.end();
   } catch (err) {
-    console.error("SERVER ERROR:", err);
-
-    return new Response("Server error: " + err.message, {
-      status: 500,
-      headers: CORS
-    });
+    console.error("API error:", err);
+    // В случае ошибки аккуратно завершаем запрос
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    }
+    res.end("Ошибка сервера. Попробуйте ещё раз.");
   }
 }
 
