@@ -1,3 +1,50 @@
+export const runtime = "nodejs";
+
+export default async function handler(req) {
+
+  // ---- CORS ----
+  const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type"
+  };
+
+  // ---- Shopify делает OPTIONS перед POST ----
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+
+  try {
+    const { message } = await req.json();
+
+    const encoder = new TextEncoder();
+
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode("Backend streaming OK\n"));
+        controller.enqueue(encoder.encode("You said: " + message));
+        controller.close();
+      }
+    });
+
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-cache"
+      }
+    });
+
+  } catch (err) {
+    return new Response("Error: " + err.message, {
+      status: 500,
+      headers: corsHeaders
+    });
+  }
+}
+
+
 /*
 // Простейший тестовый backend без OpenAI (работает)
 
@@ -9,6 +56,10 @@ export default async function handler(req, res) {
   res.status(200).send("Backend OK (Node function)");
 }
 */
+
+
+/*
+// Тоже предварительный рабочий код со стримом
 
 import OpenAI from "openai";
 
@@ -54,3 +105,4 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+*/
