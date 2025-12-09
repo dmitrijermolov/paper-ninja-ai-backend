@@ -1,4 +1,107 @@
+// api/chat.js — Vercel Node serverless (стрим + gpt-5 + web_search)
+
+export const config = {
+  runtime: "nodejs",
+};
+
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// Парсер JSON
+async function getJSON(req) {
+  return await new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", chunk => (body += chunk));
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+export default async function handler(req, res) {
+  // CORS
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    res.statusCode = 204;
+    res.end();
+    return;
+  }
+
+  if (req.method !== "POST") {
+    res.statusCode = 405;
+    res.end("Method Not Allowed");
+    return;
+  }
+
+  try {
+    const { message } = await getJSON(req);
+
+    if (!message) {
+      res.statusCode = 400;
+      res.end("No message provided");
+      return;
+    }
+
+    // Готовим SSE / Streaming ответ
+    res.writeHead(200, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-cache",
+      "Transfer-Encoding": "chunked",
+    });
+
+    // ВАЖНО: используем responses API
+    const stream = await client.responses.stream({
+      model: "gpt-5",
+      tools: [{ type: "web_search" }],
+      input: [
+        {
+          role: "system",
+          content: `
+Ты — эксперт по поиску реальных размеров ноутбуков.
+Всегда используй web_search для проверки фактов.
+Не выдумывай цифры. Давай только точные данные.
+Если ревизий несколько — попроси уточнить.
+Формат ответа — кратко, технично, без воды.
+          `,
+        },
+        {
+          role: "user",
+          content: message,
+        },
+      ],
+    });
+
+    // Проксируем поток OpenAI в Shopify
+    for await (const chunk of stream) {
+      const text = chunk?.output_text || "";
+      if (text) res.write(text);
+    }
+
+    res.end();
+  } catch (err) {
+    console.error("SERVER ERROR:", err);
+    res.statusCode = 500;
+    res.end("Server error");
+  }
+}
+
+
+
+
+/*
 // Старый рабочий
+// Придумывает размеры, не ищет в интернете. Не додходит
 
 // api/chat.js — Node serverless функция на Vercel
 
@@ -129,6 +232,7 @@ export default async function handler(req, res) {
     res.end("Ошибка сервера. Попробуйте ещё раз.");
   }
 }
+*/
 
 
 
