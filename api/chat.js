@@ -1,3 +1,119 @@
+// api/chat.js — Node serverless функция на Vercel
+
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// Вспомогательная функция чтения JSON-тела в Node-формате
+async function readJsonBody(req) {
+  if (req.body && typeof req.body === "object") {
+    return req.body;
+  }
+
+  let data = typeof req.body === "string" ? req.body : "";
+
+  return await new Promise((resolve, reject) => {
+    req.on("data", (chunk) => {
+      data += chunk;
+    });
+    req.on("end", () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+export default async function handler(req, res) {
+  // ---- CORS ----
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  // Preflight
+  if (req.method === "OPTIONS") {
+    res.statusCode = 204;
+    res.end();
+    return;
+  }
+
+  if (req.method !== "POST") {
+    res.statusCode = 405;
+    res.end("Method Not Allowed");
+    return;
+  }
+
+  try {
+    const body = await readJsonBody(req);
+    const userMessage = body?.message || "";
+
+    if (!userMessage) {
+      res.statusCode = 400;
+      res.end("No message provided");
+      return;
+    }
+
+    // Заголовки стриминга
+    res.writeHead(200, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-cache",
+      "Transfer-Encoding": "chunked",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    });
+
+    // Можно отправить небольшой префикс (по желанию)
+    // res.write("AI помощник по размерам ноутбуков\n\n");
+
+    // Запускаем стрим из OpenAI
+    const stream = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      stream: true,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "Ты — ассистент по размерам ноутбуков для магазина чехлов.",
+            "Твоя задача: за 1–2 шага уточнить модель (если нужно) и выдать габариты:",
+            "ширина, глубина, толщина (в мм).",
+            "Если точных данных нет — честно напиши, что не нашёл, и предложи измерить ноутбук линейкой.",
+            "Отвечай коротко, по-деловому, на языке пользователя.",
+          ].join(" "),
+        },
+        { role: "user", content: userMessage },
+      ],
+    });
+
+    // Стримим куски в браузер / Shopify
+    for await (const part of stream) {
+      const delta = part.choices?.[0]?.delta?.content || "";
+      if (delta) {
+        res.write(delta);
+      }
+    }
+
+    res.end();
+  } catch (err) {
+    console.error("API error:", err);
+    // В случае ошибки аккуратно завершаем запрос
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    }
+    res.end("Ошибка сервера. Попробуйте ещё раз.");
+  }
+}
+
+
+
+/*
+// Рабочий, но без gpt
 // api/chat.js  — Vercel Node Serverless (Form "Other" / Node.js function)
 
 // Можешь эту строку вообще убрать — по умолчанию и так Node
@@ -55,6 +171,7 @@ export default async function handler(req, res) {
   // Обязательно закрываем соединение
   res.end();
 }
+*/
 
 
 
