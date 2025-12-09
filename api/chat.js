@@ -90,9 +90,12 @@ export default async function handler(req, res) {
 
     res.end();
   } catch (err) {
-    console.error("SERVER ERROR:", err);
     res.statusCode = 500;
-    res.end("Server error");
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({
+      error: err?.message || "unknown",
+      stack: err?.stack || null
+    }));
   }
 }
 
