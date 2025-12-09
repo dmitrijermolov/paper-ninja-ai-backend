@@ -18,7 +18,7 @@ const SYSTEM_PROMPT = `
     - Затем оцени, корректен ли он.
     - Если ответ неточный или основан на догадке — замени на «Нет точных данных».
 7) Формат ответа: кратко, технично, только факты.
-8) Общайся на ты и на языке пользователя
+8) Общайся на ты и на языке пользователя.
 `;
 
 function isSuspiciousDimensions(text) {
@@ -37,25 +37,25 @@ function isSuspiciousDimensions(text) {
 }
 
 export default async function handler(req) {
-  const corsHeaders = {
+  const CORS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type"
   };
 
   if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders });
+    return new Response(null, { status: 204, headers: CORS });
   }
 
   try {
     const { message, history = [] } = await req.json();
 
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    // 1) Генерируем ЧЕРНОВОЙ ответ
-    const draft = await client.chat.completions.create({
+    // 1) Генерируем черновой ответ через НОВЫЙ API
+    const draftResponse = await openai.responses.create({
       model: MODEL,
-      messages: [
+      input: [
         { role: "system", content: SYSTEM_PROMPT },
         ...history,
         { role: "user", content: message }
@@ -63,33 +63,32 @@ export default async function handler(req) {
     });
 
     const draftText =
-      draft.choices?.[0]?.message?.content?.trim() || "Ошибка генерации";
+      draftResponse.output_text || "Ошибка генерации";
 
     // 2) Self-check
-    const check = await client.chat.completions.create({
+    const checkResponse = await openai.responses.create({
       model: MODEL,
-      messages: [
+      input: [
         { role: "system", content: "Проверь корректность размеров." },
         {
           role: "user",
-          content: `Проверь вот этот ответ:\n\n${draftText}\n\nЕсли есть риск ошибки → ответь NET. Если всё корректно → OK.`
+          content: `Ответ:\n${draftText}\n\nЕсли есть риск ошибки → NET. Если корректно → OK.`
         }
       ]
     });
 
-    const checkResult =
-      check.choices?.[0]?.message?.content?.trim() || "NET";
+    const checkResult = checkResponse.output_text.trim();
 
     let finalText = draftText;
 
-    // 3) Backend-фильтр
     if (checkResult.includes("NET") || isSuspiciousDimensions(draftText)) {
       finalText =
-        "Нет точных данных по этой модели. Уточните модификацию или поколение.";
+        "Нет точных данных по этой модели. Уточни модификацию или поколение.";
     }
 
-    // STREAM одной строкой (т.к. финальный ответ уже готов)
+    // 3) STREAM
     const encoder = new TextEncoder();
+
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(encoder.encode(finalText));
@@ -100,17 +99,18 @@ export default async function handler(req) {
     return new Response(stream, {
       status: 200,
       headers: {
-        ...corsHeaders,
+        ...CORS,
         "Content-Type": "text/plain; charset=utf-8",
         "Cache-Control": "no-cache"
       }
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("SERVER ERROR:", err);
+
     return new Response("Server error: " + err.message, {
       status: 500,
-      headers: corsHeaders
+      headers: CORS
     });
   }
 }
