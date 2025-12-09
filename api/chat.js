@@ -1,23 +1,27 @@
-// api/chat.js — Vercel Node serverless (стрим + gpt-5 + web_search)
-
+// -----------------------------------------------------------
+// Vercel API Route — Node.js runtime, streaming, GPT-5, web_search
+// -----------------------------------------------------------
 export const config = {
-  runtime: "nodejs",
+  runtime: "nodejs"
 };
 
 import OpenAI from "openai";
 
+// Создаем клиент OpenAI
 const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: process.env.OPENAI_API_KEY
 });
 
-// Парсер JSON
-async function getJSON(req) {
+// Чтение JSON тела (Node.js stdin)
+async function readJsonBody(req) {
+  if (req.body && typeof req.body === "object") return req.body;
+
+  let data = "";
   return await new Promise((resolve, reject) => {
-    let body = "";
-    req.on("data", chunk => (body += chunk));
+    req.on("data", (chunk) => (data += chunk));
     req.on("end", () => {
       try {
-        resolve(body ? JSON.parse(body) : {});
+        resolve(data ? JSON.parse(data) : {});
       } catch (e) {
         reject(e);
       }
@@ -26,12 +30,16 @@ async function getJSON(req) {
   });
 }
 
+// -----------------------------------------------------------
+// МЕГА-СТАБИЛЬНЫЙ HANDLER
+// -----------------------------------------------------------
 export default async function handler(req, res) {
-  // CORS
+  // ---- CORS (важно для Shopify) ----
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
+  // Preflight запрос Shopify
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
     res.end();
@@ -45,57 +53,67 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { message } = await getJSON(req);
+    // ----- Чтение данных от Shopify -----
+    const body = await readJsonBody(req);
+    const userMessage = body?.message || "";
 
-    if (!message) {
+    if (!userMessage) {
       res.statusCode = 400;
       res.end("No message provided");
       return;
     }
 
-    // Готовим SSE / Streaming ответ
+    // ----- Заголовки стриминга -----
     res.writeHead(200, {
       "Content-Type": "text/plain; charset=utf-8",
-      "Cache-Control": "no-cache",
+      "Cache-Control": "no-cache, no-transform",
       "Transfer-Encoding": "chunked",
+      "X-Content-Type-Options": "nosniff",
+      "Access-Control-Allow-Origin": "*"
     });
 
-    // ВАЖНО: используем responses API
-    const stream = await client.responses.stream({
+    // -----------------------------------------------------------
+    //  GPT-5 + web_search + streaming
+    // -----------------------------------------------------------
+    const upstream = await client.responses.stream({
       model: "gpt-5",
-      tools: [{ type: "web_search" }],
       input: [
         {
           role: "system",
           content: `
-Ты — эксперт по поиску реальных размеров ноутбуков.
-Всегда используй web_search для проверки фактов.
-Не выдумывай цифры. Давай только точные данные.
-Если ревизий несколько — попроси уточнить.
-Формат ответа — кратко, технично, без воды.
-          `,
+Ты — эксперт по размерам ноутбуков.
+1) Даёшь только точные данные.
+2) Если модели нет — отвечай "Нет точных данных".
+3) Используй web_search, если нужно.
+4) Не придумывай числа.
+5) Отвечай коротко, технично, строго размеры.
+`
         },
-        {
-          role: "user",
-          content: message,
-        },
+        { role: "user", content: userMessage }
       ],
+      tools: [
+        { type: "web_search" }
+      ]
     });
 
-    // Проксируем поток OpenAI в Shopify
-    for await (const chunk of stream) {
-      const text = chunk?.output_text || "";
+    // Преобразуем стрим OpenAI в Node.js поток
+    for await (const chunk of upstream) {
+      const text = chunk?.output_text || chunk?.delta || "";
       if (text) res.write(text);
     }
 
     res.end();
   } catch (err) {
-    res.statusCode = 500;
-    res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({
-      error: err?.message || "unknown",
-      stack: err?.stack || null
-    }));
+    console.error("API error:", err);
+
+    if (!res.headersSent) {
+      res.writeHead(500, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Access-Control-Allow-Origin": "*"
+      });
+    }
+
+    res.end("Server error: " + err.message);
   }
 }
 
