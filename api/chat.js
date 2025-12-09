@@ -1,8 +1,10 @@
 export const runtime = "edge";
 
-export default async function handler(req) {
-  return new Response("TEST OK", {
+export default async function handler(request) {
+  return new Response("Backend OK", {
     status: 200,
-    headers: { "Content-Type": "text/plain" }
+    headers: {
+      "Content-Type": "text/plain"
+    }
   });
 }
