@@ -5,6 +5,6 @@
   "license": "MIT",
   "type": "module",
   "dependencies": {
-    "openai": "latest"
+    "openai": "^4.32.0"
   }
 }
