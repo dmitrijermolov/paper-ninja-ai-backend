@@ -1,15 +1,7 @@
-// api/chat.js — Node.js Serverless Function on Vercel
+// api/chat.js — Vercel Serverless Function
 import OpenAI from "openai";
 
-export const config = {
-  runtime: "nodejs",  // важно для работы потоков
-};
-
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-// --- Утилита чтения JSON-тела (нужно для Node serverless) ---
+// --- JSON body reader ---
 async function readJson(req) {
   if (req.body && typeof req.body === "object") return req.body;
 
@@ -28,7 +20,7 @@ async function readJson(req) {
 }
 
 export default async function handler(req, res) {
-  // ---- CORS ----
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -52,41 +44,36 @@ export default async function handler(req, res) {
       return res.end("No message");
     }
 
-    // --- Настройка ответа для стриминга ---
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+    // streaming headers
     res.writeHead(200, {
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-cache",
       "Transfer-Encoding": "chunked",
     });
 
-    // --- Запрос в Responses API ---
-    const response = await client.responses.create({
-      model: "gpt-5", // можно заменить на gpt-5-preview
+    // Responses API stream
+    const stream = await client.responses.create({
+      model: "gpt-5",
       tools: [{ type: "web_search" }],
       input: userMessage,
       stream: true,
     });
 
-    // --- Чтение stream-дельт ---
-    for await (const event of response) {
-      // Каждый event может содержать delta text
-      const textDelta =
-        event?.response?.output_text?.[0]?.content?.[0]?.text || "";
-
-      if (textDelta) {
-        res.write(textDelta);
-      }
+    for await (const item of stream) {
+      const delta =
+        item?.response?.output_text?.[0]?.content?.[0]?.text || "";
+      if (delta) res.write(delta);
     }
 
     res.end();
   } catch (err) {
     console.error("SERVER ERROR:", err);
-
     if (!res.headersSent) {
       res.statusCode = 500;
       res.setHeader("Content-Type", "text/plain");
     }
-
     res.end("Server error");
   }
 }
