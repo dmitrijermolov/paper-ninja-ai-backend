@@ -1,79 +1,38 @@
-// api/chat.js — Vercel Serverless Function
-import OpenAI from "openai";
+export const config = {
+  runtime: "edge", // STREAM работает только в EDGE
+};
 
-// --- JSON body reader ---
-async function readJson(req) {
-  if (req.body && typeof req.body === "object") return req.body;
+export default async function handler(req) {
+  const { message } = await req.json();
 
-  let data = "";
-  return await new Promise((resolve, reject) => {
-    req.on("data", (c) => (data += c));
-    req.on("end", () => {
-      try {
-        resolve(data ? JSON.parse(data) : {});
-      } catch (e) {
-        reject(e);
-      }
-    });
-    req.on("error", reject);
-  });
-}
-
-export default async function handler(req, res) {
-  // CORS
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-  if (req.method === "OPTIONS") {
-    res.statusCode = 204;
-    return res.end();
+  if (!message) {
+    return new Response("No message", { status: 400 });
   }
 
-  if (req.method !== "POST") {
-    res.statusCode = 405;
-    return res.end("Method Not Allowed");
-  }
+  const apiKey = process.env.OPENAI_API_KEY;
 
-  try {
-    const body = await readJson(req);
-    const userMessage = body?.message || "";
-
-    if (!userMessage) {
-      res.statusCode = 400;
-      return res.end("No message");
-    }
-
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-    // streaming headers
-    res.writeHead(200, {
-      "Content-Type": "text/plain; charset=utf-8",
-      "Cache-Control": "no-cache",
-      "Transfer-Encoding": "chunked",
-    });
-
-    // Responses API stream
-    const stream = await client.responses.create({
+  // Стартуем стрим через fetch к Responses API
+  const upstream = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
       model: "gpt-5",
-      tools: [{ type: "web_search" }],
-      input: userMessage,
       stream: true,
-    });
+      tools: [{ type: "web_search" }],
+      input: message,
+    }),
+  });
 
-    for await (const item of stream) {
-      const delta =
-        item?.response?.output_text?.[0]?.content?.[0]?.text || "";
-      if (delta) res.write(delta);
-    }
-
-    res.end();
-  } catch (err) {
-    console.error("SERVER ERROR:", err);
-    if (!res.headersSent) {
-      res.statusCode = 500;
-      res.setHeader("Content-Type", "text/plain");
-    }
-    res.end("Server error");
-  }
+  // отдаём поток напрямую клиенту
+  return new Response(upstream.body, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "Access-Control-Allow-Origin": "*",
+    },
+  });
 }
