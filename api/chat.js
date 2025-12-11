@@ -1,10 +1,9 @@
 export const runtime = "nodejs";
 
-import OpenAI from "openai";
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// === GPT-5 через Responses API (правильный современный способ) ===
 
 export default async function handler(req, res) {
-  // CORS
+  // ----- CORS -----
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -21,70 +20,95 @@ export default async function handler(req, res) {
     return;
   }
 
-  // Чтение JSON
+  // ----- читаем тело -----
   let body = "";
   await new Promise((resolve) => {
-    req.on("data", (chunk) => (body += chunk));
+    req.on("data", (c) => (body += c));
     req.on("end", resolve);
   });
 
-  const { message } = JSON.parse(body || "{}");
-  if (!message) {
+  let msg = "";
+  try {
+    msg = JSON.parse(body)?.message || "";
+  } catch (e) {
+    res.statusCode = 400;
+    res.end("Invalid JSON");
+    return;
+  }
+
+  if (!msg) {
     res.statusCode = 400;
     res.end("No message provided");
     return;
   }
 
-  // Начинаем стрим НЕМЕДЛЕННО
+  // ----- ответ начинаем сразу (streaming) -----
   res.writeHead(200, {
     "Content-Type": "text/plain; charset=utf-8",
     "Cache-Control": "no-cache",
     "Transfer-Encoding": "chunked",
-    "Access-Control-Allow-Origin": "*"
+    "Access-Control-Allow-Origin": "*",
   });
 
-  // Функция отправки чанков
-  const send = (text) => res.write(text);
+  // ===== SYSTEM PROMPT =====
+  const SYSTEM = `
+Ты — эксперт по точным размерам ноутбуков.
 
-  // Имитация "поиска"
-  const steps = [
-    "🔍 Ищу данные в базе производителей...\n",
-    "📁 Проверяю технические каталоги...\n",
-    "🧠 Сверяю с похожими моделями...\n",
-    "📐 Анализирую поколения модели...\n"
-  ];
+СТРОГИЕ ПРАВИЛА:
+1. Давай ТОЛЬКО точные размеры в мм: ширина, глубина, толщина.
+2. Если точной информации НЕТ — отвечай: "Нет точных данных по этой модели."
+3. Запрещено:
+   • выдумывать,
+   • давать диапазоны,
+   • писать «обычно», «примерно», «может варьироваться»,
+   • описывать ноутбук.
+4. Ответ — только факты. Никакой лишней воды.
+`;
 
-  let i = 0;
-  const interval = setInterval(() => {
-    if (i < steps.length) {
-      send(steps[i]);
-      i++;
-    } else {
-      clearInterval(interval);
-    }
-  }, 900);
+  // ===== создаём запрос к Responses API =====
 
-  // Параллельно запрашиваем OpenAI
-  let finalAnswer = "Ошибка AI";
-  try {
-    const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "Ты — эксперт по размерам ноутбуков." },
-        { role: "user", content: message }
-      ]
-    });
+  const upstream = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "gpt-5",
+      stream: true,
+      tools: [{ type: "web_search" }],   // даём доступ к поиску
+      input: [
+        { role: "system", content: SYSTEM },
+        { role: "user", content: msg },
+      ],
+    }),
+  });
 
-    finalAnswer = completion.choices[0].message.content;
-  } catch (err) {
-    finalAnswer = "Ошибка AI: " + err.message;
+  // Если ошибка API — отдаём текст ошибки
+  if (!upstream.ok) {
+    const errText = await upstream.text();
+    res.write("Ошибка сервера OpenAI:\n" + errText);
+    return res.end();
   }
 
-  // Ждём завершения "анимации"
-  await new Promise((resolve) => setTimeout(resolve, 1200));
+  // ===== ПРОКСИРУЕМ ПОТОК НАПРЯМУЮ В SHOPIFY =====
 
-  send("\n\n✅ Найдено:\n");
-  send(finalAnswer);
+  try {
+    for await (const chunk of upstream.body) {
+      const text = chunk.toString("utf8");
+
+      // ФИЛЬТРЫ АНТИ-ХАЛЛЮЦИНАЦИЙ
+      if (/обычно|примерно|варьирует|around|typically/i.test(text)) {
+        // НЕ выводим такие куски в ответ
+        continue;
+      }
+
+      // Пишем чисто то, что сказал GPT-5
+      res.write(text);
+    }
+  } catch (err) {
+    res.write("\nОшибка стриминга: " + err.message);
+  }
 
   res.end();
 }
