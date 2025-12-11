@@ -1,9 +1,7 @@
 export const runtime = "nodejs";
 
-// === GPT-5 через Responses API (правильный современный способ) ===
-
 export default async function handler(req, res) {
-  // ----- CORS -----
+  // ---- CORS ----
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -14,35 +12,27 @@ export default async function handler(req, res) {
     return;
   }
 
-  if (req.method !== "POST") {
-    res.statusCode = 405;
-    res.end("Method Not Allowed");
-    return;
-  }
-
-  // ----- читаем тело -----
+  // ---- Reading body ----
   let body = "";
   await new Promise((resolve) => {
-    req.on("data", (c) => (body += c));
+    req.on("data", (chunk) => (body += chunk));
     req.on("end", resolve);
   });
 
-  let msg = "";
+  let message = "";
   try {
-    msg = JSON.parse(body)?.message || "";
+    message = JSON.parse(body)?.message || "";
   } catch (e) {
     res.statusCode = 400;
-    res.end("Invalid JSON");
-    return;
+    return res.end("Invalid JSON");
   }
 
-  if (!msg) {
+  if (!message) {
     res.statusCode = 400;
-    res.end("No message provided");
-    return;
+    return res.end("No message provided");
   }
 
-  // ----- ответ начинаем сразу (streaming) -----
+  // ---- STREAM RESPONSE ----
   res.writeHead(200, {
     "Content-Type": "text/plain; charset=utf-8",
     "Cache-Control": "no-cache",
@@ -50,64 +40,61 @@ export default async function handler(req, res) {
     "Access-Control-Allow-Origin": "*",
   });
 
-  // ===== SYSTEM PROMPT =====
+  // ---- SYSTEM PROMPT ----
   const SYSTEM = `
-Ты — эксперт по точным размерам ноутбуков.
-
-СТРОГИЕ ПРАВИЛА:
-1. Давай ТОЛЬКО точные размеры в мм: ширина, глубина, толщина.
-2. Если точной информации НЕТ — отвечай: "Нет точных данных по этой модели."
-3. Запрещено:
-   • выдумывать,
-   • давать диапазоны,
-   • писать «обычно», «примерно», «может варьироваться»,
-   • описывать ноутбук.
-4. Ответ — только факты. Никакой лишней воды.
+Ты — эксперт по размерам ноутбуков.
+Давай ТОЛЬКО точные размеры в мм.
+Если точных данных нет — напиши: "Нет точных данных по этой модели."
+Запрещено: "обычно", "примерно", "может варьироваться", диапазоны, выдумки.
+Только факты.
 `;
 
-  // ===== создаём запрос к Responses API =====
-
+  // ---- REQUEST TO RESPONSES API ----
   const upstream = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
     },
     body: JSON.stringify({
       model: "gpt-5",
       stream: true,
-      tools: [{ type: "web_search" }],   // даём доступ к поиску
+      tools: [{ type: "web_search" }],
       input: [
         { role: "system", content: SYSTEM },
-        { role: "user", content: msg },
-      ],
+        { role: "user", content: message }
+      ]
     }),
   });
 
-  // Если ошибка API — отдаём текст ошибки
-  if (!upstream.ok) {
-    const errText = await upstream.text();
-    res.write("Ошибка сервера OpenAI:\n" + errText);
-    return res.end();
-  }
-
-  // ===== ПРОКСИРУЕМ ПОТОК НАПРЯМУЮ В SHOPIFY =====
+  const decoder = new TextDecoder();
 
   try {
     for await (const chunk of upstream.body) {
-      const text = chunk.toString("utf8");
+      const text = decoder.decode(chunk);
 
-      // ФИЛЬТРЫ АНТИ-ХАЛЛЮЦИНАЦИЙ
-      if (/обычно|примерно|варьирует|around|typically/i.test(text)) {
-        // НЕ выводим такие куски в ответ
-        continue;
+      // SSE содержит отдельные события: ищем "output_text"
+      const lines = text.split("\n");
+
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+
+        let data;
+        try {
+          data = JSON.parse(line.replace("data:", "").trim());
+        } catch {
+          continue;
+        }
+
+        // Ищем текстовый вывод
+        const output = data?.delta?.output_text;
+        if (output) {
+          res.write(output);
+        }
       }
-
-      // Пишем чисто то, что сказал GPT-5
-      res.write(text);
     }
   } catch (err) {
-    res.write("\nОшибка стриминга: " + err.message);
+    res.write("\n[Stream error]\n" + err.message);
   }
 
   res.end();
