@@ -54,7 +54,7 @@ export default async function handler(req, res) {
   });
 
   try {
-    // === Запрос к Responses API с GPT-5 ===
+    // === Быстрый вариант для AI size helper ===
     const upstream = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
@@ -62,9 +62,31 @@ export default async function handler(req, res) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-5",
+        // Быстрее и дешевле, чем обычный gpt-5
+        model: "gpt-5.4-mini",
+
+        // Stream оставляем, чтобы текст начинал появляться как можно раньше
         stream: true,
-        tools: [{ type: "web_search" }],
+
+        // Минимум reasoning, чтобы сократить паузу перед первым текстом
+        reasoning: {
+          effort: "minimal"
+        },
+
+        // Ограничиваем длину ответа
+        max_output_tokens: 600,
+
+        // Web search оставляем, но делаем легче
+        tools: [
+          {
+            type: "web_search",
+            search_context_size: "low"
+          }
+        ],
+
+        // Модель сама решает, нужен ли поиск
+        tool_choice: "auto",
+
         input: messages,
       }),
     });
