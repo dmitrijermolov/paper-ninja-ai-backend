@@ -105,17 +105,13 @@ export default async function handler(req, res) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-5.4-mini",
-
-        stream: true,
-
-        reasoning: {
-          effort: "minimal"
-        },
-
-        max_output_tokens: 400,
-
+        model: "gpt-5-mini",
+        reasoning: { effort: "low" },
+        tools: [{ type: "web_search", search_context_size: "low" }],
+        parallel_tool_calls: true,
+        text: { verbosity: "low" },
         input: messages,
+        stream: true,
       }),
     });
 
